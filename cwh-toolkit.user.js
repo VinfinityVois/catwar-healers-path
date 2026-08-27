@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         cwh-toolkit.user.js
+// @name         Тропа Целителя: Калькуляторы и Болезни
 // @namespace    catwar-healer
 // @version      1.9.3
 // @description  Справочник болезней/трав, калькулятор ЦУ/грязи/смеси/костоправов, последовательность действий.
