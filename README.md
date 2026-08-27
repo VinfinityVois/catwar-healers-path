@@ -30,7 +30,7 @@
    * [Tampermonkey](https://www.tampermonkey.net/) *(рекомендуется)*
    * [Violentmonkey](https://violentmonkey.github.io/)
 2. Установите скрипт напрямую из репозитория:
-   * 👉 **[Нажмите здесь для установки](https://github.com/ВАШ_НИКНЕЙМ/catwar-healers-path/raw/main/healers-path.user.js)**
+   * 👉 **[Нажмите здесь для установки]([https://github.com/ВАШ_НИКНЕЙМ/catwar-healers-path/raw/main/healers-path.user.js](https://raw.githubusercontent.com/VinfinityVois/catwar-healers-path/main/Тропа%20Целителя_%20Калькуляторы%20и%20Болезни.user.js))**
 3. Подтвердите установку в открывшемся окне плагина.
 
 ---
