@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         Тропа Целителя: Калькуляторы и Болезни
 // @namespace    catwar-healer
-// @version      1.9.3
-// @description  Справочник болезней/трав, калькулятор ЦУ/грязи/смеси/костоправов, последовательность действий.
+// @version      1.9.4
+// @description  Справочник болезней/трав, калькулятор ЦУ/грязи/смеси/костоправов
 // @author       Древняя Мечта 1702183
 // @match        http*://*.catwar.net/cw3/*
 // @match        http*://*.catwar.su/cw3/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @connect      i.ibb.co
+// @updateURL    https://raw.githubusercontent.com/VinfinityVois/catwar-healers-path/main/cwh-toolkit.user.js
+// @downloadURL  https://raw.githubusercontent.com/VinfinityVois/catwar-healers-path/main/cwh-toolkit.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
