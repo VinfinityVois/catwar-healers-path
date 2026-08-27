@@ -10,7 +10,7 @@ UserScript для игры **CatWar** — справочник болезней,
 
 2. Нажмите кнопку ниже — откроется окно установки скрипта:
 
-   👉 **[Установить Тропу Целителя](https://vinfinityvois.github.io/catwar-healers-path/cwh-toolkit.user.js)**
+   👉 **[Установить Тропу Целителя]([https://vinfinityvois.github.io/catwar-healers-path/cwh-toolkit.user.js](https://raw.githubusercontent.com/VinfinityVois/catwar-healers-path/main/cwh-toolkit.user.js))**
 
 ## 📋 Что умеет
 
