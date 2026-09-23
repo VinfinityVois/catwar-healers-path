@@ -4006,7 +4006,6 @@
         <div class="cwh-card cwh-memo-note-card">
           <div class="cwh-memo-note">
             Паутинный костоправ <b>+15%</b> к вьюнковому.<br>
-            Полные таблицы % по часам — в Google-памятке.
           </div>
         </div>
       </div>
