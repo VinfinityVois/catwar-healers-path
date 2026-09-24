@@ -6,6 +6,8 @@
 // @author       Древняя Мечта 1702183
 // @match        http*://*.catwar.net/cw3/*
 // @match        http*://*.catwar.su/cw3/*
+// @match        http*://*.catwar.net/*
+// @match        http*://*.catwar.su/*
 // @exclude      http*://*.catwar.net/cw3/jagd*
 // @exclude      http*://*.catwar.su/cw3/jagd*
 // @grant        GM_setValue
@@ -192,6 +194,129 @@
       if (hasShchel && hasMoss1) return true;
       return false;
     } catch (e) { return false; }
+  }
+
+  
+  /** Санта-Муэрте: полный функционал памятки / легенды. Остальным — урезанный. */
+  function isSantaMuerte() {
+    try {
+      return !!GM_getValue('cwh_clan_sm', false);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setSantaMuerteFlag(v) {
+    GM_setValue('cwh_clan_sm', !!v);
+  }
+
+  /** Разобрать HTML профиля: племя Санта-Муэрте? */
+  function parseClanFromHtml(html) {
+    if (!html || typeof html !== 'string') return null;
+    // вырезаем скрипты/стили чтобы не ловить мусор
+    const clean = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ');
+    // профиль: <b>Санта-Муэрте</b> рядом с clan / «защитник племени»
+    if (/санта[\s\-–—]*муэрт/i.test(clean)) return true;
+    // если на странице есть блок племени с другим именем — false
+    // (иконка clan + жирное имя)
+    if (/id=["']clan_icon["']/i.test(clean) || /icon_clan\.png/i.test(clean)) {
+      // другое племя видно, СМ нет
+      return false;
+    }
+    return null; // неизвестно
+  }
+
+  /** Найти URL своей личной страницы (net / su) */
+  function findOwnProfileUrl() {
+    try {
+      const origin = location.origin || (location.protocol + '//' + location.host);
+      // 1) «Моя кошка» в топбаре → обычно href="/"
+      const links = document.querySelectorAll('.game-topbar-nav a[href], #app a[href], a[href]');
+      for (let i = 0; i < links.length; i++) {
+        const a = links[i];
+        const t = (a.textContent || '').replace(/\s+/g, ' ').trim();
+        if (/^моя\s*кошка$/i.test(t) || /^мой\s*кот$/i.test(t) || /^my\s*cat$/i.test(t)) {
+          let href = a.getAttribute('href') || '/';
+          if (href === '/' || href === '' || href === origin || href === origin + '/') {
+            return origin + '/';
+          }
+          if (href.indexOf('http') === 0) return href.split('#')[0];
+          return origin + (href.charAt(0) === '/' ? href : '/' + href);
+        }
+      }
+      // 2) сохранённый URL
+      const saved = GM_getValue('cwh_clan_profile_url', '');
+      if (saved && saved.indexOf(location.host) !== -1) return saved;
+      // 3) /catID
+      const ownId = GM_getValue('cwh_own_cat_id', '');
+      if (ownId && String(ownId).match(/^\d{3,}$/)) return origin + '/cat' + ownId;
+      const pathM = (location.pathname || '').match(/\/cat(\d{3,})/i);
+      if (pathM && (document.getElementById('clan_icon') || document.getElementById('pr'))) {
+        const u = origin + '/cat' + pathM[1];
+        GM_setValue('cwh_clan_profile_url', u);
+        GM_setValue('cwh_own_cat_id', pathM[1]);
+        return u;
+      }
+      // 4) корень сайта — личная страница у CatWar
+      return origin + '/';
+    } catch (e) {}
+    return null;
+  }
+
+  /** Один раз (или раз в N часов) подтянуть профиль и выставить флаг СМ */
+  function refreshClanFromProfile(force) {
+    try {
+      const last = +GM_getValue('cwh_clan_checked_at', 0) || 0;
+      const ttl = 30 * 60 * 1000; // 30 мин кэш; на каждом заходе в игру force=true
+      if (!force && last && (Date.now() - last) < ttl) {
+        return Promise.resolve(isSantaMuerte());
+      }
+      // уже на профиле — парсим DOM и запоминаем /catID
+      if (document.getElementById('clan_icon') || document.getElementById('pr')) {
+        const pathM = (location.pathname || '').match(/\/cat(\d{3,})/i);
+        if (pathM) {
+          GM_setValue('cwh_own_cat_id', pathM[1]);
+          GM_setValue('cwh_clan_profile_url', (location.origin || '') + '/cat' + pathM[1]);
+        }
+        const t = (document.body && document.body.innerText) || '';
+        if (/санта[\s\-–—]*муэрт/i.test(t)) {
+          GM_setValue('cwh_clan_sm', true);
+          GM_setValue('cwh_clan_checked_at', Date.now());
+          return Promise.resolve(true);
+        }
+        if (document.getElementById('clan_icon')) {
+          GM_setValue('cwh_clan_sm', false);
+          GM_setValue('cwh_clan_checked_at', Date.now());
+          return Promise.resolve(false);
+        }
+      }
+      const url = findOwnProfileUrl();
+      if (!url) {
+        // нет URL — оставляем кэш
+        return Promise.resolve(isSantaMuerte());
+      }
+      return fetch(url, {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Accept': 'text/html' }
+      }).then(function(r) {
+        if (!r.ok) throw new Error('profile ' + r.status);
+        return r.text();
+      }).then(function(html) {
+        const v = parseClanFromHtml(html);
+        if (v === true) GM_setValue('cwh_clan_sm', true);
+        else if (v === false) GM_setValue('cwh_clan_sm', false);
+        GM_setValue('cwh_clan_checked_at', Date.now());
+        GM_setValue('cwh_clan_profile_url', url);
+        return isSantaMuerte();
+      }).catch(function() {
+        return isSantaMuerte();
+      });
+    } catch (e) {
+      return Promise.resolve(isSantaMuerte());
+    }
   }
 
   function scanMouthItems() {
@@ -1788,50 +1913,85 @@
     }
     #cwh-widget .cwh-check input { width: auto; margin: 0; }
 
-    /* подписи во рту — не перекрывают карточки/окна игры */
+    /* подписи во рту: срок порчи + кучка */
     #itemList { position: relative; z-index: 1; }
     #itemList .itemInMouth {
-      position: relative;
-      overflow: visible;
+      position: relative !important;
+      overflow: visible !important;
       z-index: 0;
     }
     #itemList .cwh-info-label { display: none !important; }
-    #itemList .cwh-spoil-label,
-    #itemList .cwh-info-label.x {
-      display: none !important;
+    #itemList .cwh-spoil-label {
+      display: block !important;
+      position: absolute !important;
+      left: 50% !important;
+      bottom: -2px !important;
+      transform: translateX(-50%) !important;
+      z-index: 20 !important;
+      pointer-events: none !important;
+      white-space: nowrap !important;
+      font: 700 9px/1.1 "Segoe UI", system-ui, sans-serif !important;
+      color: #c8e6a0 !important;
+      text-shadow: 0 0 3px #000, 0 1px 2px #000 !important;
+      background: rgba(0,0,0,.72) !important;
+      border-radius: 4px !important;
+      padding: 1px 4px !important;
     }
-    .cwh-spoil-label {
-      z-index: 0 !important;
+    #itemList .cwh-spoil-label.warn {
+      color: #ffb0b0 !important;
+      border: 1px solid rgba(232,100,100,.45) !important;
+    }
+    #itemList .cwh-spoil-label.soft {
+      color: #b8c0c8 !important;
+      font-weight: 600 !important;
+    }
+    #itemList .cwh-pile-label {
+      display: block !important;
+      position: absolute !important;
+      left: 50% !important;
+      top: -2px !important;
+      transform: translateX(-50%) !important;
+      z-index: 20 !important;
+      pointer-events: none !important;
+      white-space: nowrap !important;
+      font: 700 8px/1.1 "Segoe UI", system-ui, sans-serif !important;
+      color: #9fd6ff !important;
+      text-shadow: 0 0 3px #000, 0 1px 2px #000 !important;
+      background: rgba(0,20,40,.75) !important;
+      border-radius: 4px !important;
+      padding: 1px 4px !important;
+      max-width: 72px !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
     }
     /* легенда поля — ниже всплывашек персонажа */
 
     /* Скользкий туннель — НЕ ХОДИТЬ (переходы .move_parent / .move_name) */
-    #cages td.cage.cwh-no-go,
     .move_parent.cwh-no-go,
-    span.move_parent.cwh-no-go {
-      position: relative !important;
-      pointer-events: none !important;
-      cursor: not-allowed !important;
-    }
-    #cages td.cage.cwh-no-go * ,
-    .move_parent.cwh-no-go * {
-      pointer-events: none !important;
-    }
+    span.move_parent.cwh-no-go,
     #cages td.cage.cwh-no-go {
-      outline: 2px solid #c62828 !important;
-      outline-offset: -2px;
-      box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.78) !important;
-    }
-    .move_parent.cwh-no-go {
+      position: relative !important;
+      cursor: not-allowed !important;
       outline: 2px solid #c62828 !important;
       outline-offset: -1px;
       border-radius: 2px;
       box-shadow: inset 0 0 0 999px rgba(0, 0, 0, 0.78) !important;
       background-color: rgba(0, 0, 0, 0.78) !important;
     }
-    .move_parent.cwh-no-go .move_name,
-    #cages td.cage.cwh-no-go .move_name {
-      opacity: 0 !important;
+    /* блокер поверх клетки — ловит клики (не pointer-events:none!) */
+    .cwh-no-go-blocker {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      z-index: 40 !important;
+      cursor: not-allowed !important;
+      pointer-events: auto !important;
+      background: transparent !important;
+    }
+    .move_parent.cwh-no-go .move_name {
+      /* оставляем видимой игровую подпись, метка НЕ ХОДИТЬ поверх */
     }
     .cwh-no-go-name {
       position: absolute !important;
@@ -2111,19 +2271,72 @@
     }
     #cwh-widget .cwh-step b { color: #9fd66c; }
 
-    #cwh-toggle {
-      position: fixed; bottom: 18px; right: 18px; z-index: 99998;
-      left: auto; top: auto;
-      width: 42px; height: 42px; border-radius: 50%;
-      background: linear-gradient(145deg, #2a2c30, #1b1c1f);
-      border: 1px solid rgba(127,174,92,.4);
-      color: #9fd66c; font-size: 18px; cursor: grab;
-      box-shadow: 0 4px 16px rgba(0,0,0,.4);
-      display: flex; align-items: center; justify-content: center;
-      user-select: none;
+    /* кнопка в топбаре — размер/стиль как у #uwu-navbar-btn */
+    #cwh-toggle.cwh-topbar-btn,
+    #cwh-toggle.game-topbar-uwu-btn {
+      position: relative !important;
+      left: auto !important;
+      top: auto !important;
+      bottom: auto !important;
+      right: auto !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 5px;
+      height: 28px !important;
+      min-height: 28px !important;
+      max-height: 32px !important;
+      width: auto !important;
+      min-width: 0 !important;
+      margin: 0 2px !important;
+      padding: 0 8px !important;
+      border-radius: 999px !important;
+      border: 1px solid rgba(255,255,255,.12) !important;
+      background: rgba(0,0,0,.25) !important;
+      color: #c8d6b0 !important;
+      font: 600 12px/1 "Segoe UI", system-ui, sans-serif !important;
+      cursor: pointer !important;
+      box-shadow: none !important;
+      vertical-align: middle !important;
+      flex-shrink: 0 !important;
+      z-index: 5 !important;
+      box-sizing: border-box !important;
     }
-    #cwh-toggle:hover { border-color: #9fd66c; }
-    #cwh-toggle:active { cursor: grabbing; }
+    #cwh-toggle.cwh-topbar-btn:hover,
+    #cwh-toggle.game-topbar-uwu-btn:hover {
+      border-color: rgba(159,214,108,.55) !important;
+      background: rgba(127,174,92,.18) !important;
+      color: #d4f0a8 !important;
+    }
+    #cwh-toggle .cwh-tog-ico {
+      font-size: 14px !important;
+      line-height: 1 !important;
+      pointer-events: none;
+    }
+    #cwh-toggle .cwh-tog-label {
+      pointer-events: none;
+      white-space: nowrap;
+      letter-spacing: 0.01em;
+    }
+    /* узкий экран — только иконка, как компактный UwU */
+    @media (max-width: 900px) {
+      #cwh-toggle .cwh-tog-label { display: none; }
+      #cwh-toggle.cwh-topbar-btn {
+        padding: 0 6px !important;
+        width: 28px !important;
+        min-width: 28px !important;
+      }
+    }
+    /* fallback пока нет топбара */
+    body > #cwh-toggle {
+      position: fixed !important;
+      bottom: 18px !important;
+      right: 18px !important;
+      z-index: 99998 !important;
+      border-radius: 999px !important;
+      height: 36px !important;
+      padding: 0 12px !important;
+    }
 
     /* ===== MOBILE / TOUCH ===== */
     #cwh-widget, #cwh-toggle {
@@ -3109,72 +3322,63 @@
     if (document.getElementById('cwh-toggle')) return;
     const btn = document.createElement('button');
     btn.id = 'cwh-toggle';
-    btn.title = 'Целитель (перетаскивай)';
-    btn.textContent = '⚕';
+    btn.type = 'button';
+    btn.title = 'Тропа целителя';
+    btn.setAttribute('aria-label', 'Тропа целителя');
+    // классы как у UwU — те же размеры в топбаре
+    btn.className = 'game-topbar-uwu-btn cwh-topbar-btn';
+    btn.innerHTML = '<span class="cwh-tog-ico" aria-hidden="true">🌿</span><span class="cwh-tog-label">Тропа целителя</span>';
 
-    // restore position
-    const saved = GM_getValue('cwh_toggle_pos', null);
-    if (saved && saved.left != null && saved.top != null) {
-      btn.style.left = saved.left;
-      btn.style.top = saved.top;
-      btn.style.right = 'auto';
-      btn.style.bottom = 'auto';
-    }
-
-    let drag = false, moved = false, ox = 0, oy = 0;
-    function togPoint(e) {
-      const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
-      return { x: t.clientX, y: t.clientY };
-    }
-    function togStart(e) {
-      if (e.type === 'mousedown' && e.button !== 0) return;
-      drag = true; moved = false;
-      const r = btn.getBoundingClientRect();
-      const pt = togPoint(e);
-      ox = pt.x - r.left;
-      oy = pt.y - r.top;
-      try { e.preventDefault(); } catch (err) {}
-    }
-    function togMove(e) {
-      if (!drag) return;
-      moved = true;
-      const size = btn.offsetWidth || 48;
-      const pt = togPoint(e);
-      let x = pt.x - ox;
-      let y = pt.y - oy;
-      x = Math.max(0, Math.min(window.innerWidth - size, x));
-      y = Math.max(0, Math.min(window.innerHeight - size, y));
-      btn.style.left = x + 'px';
-      btn.style.top = y + 'px';
-      btn.style.right = 'auto';
-      btn.style.bottom = 'auto';
-      try { e.preventDefault(); } catch (err) {}
-    }
-    function togEnd() {
-      if (!drag) return;
-      drag = false;
-      if (moved) {
-        GM_setValue('cwh_toggle_pos', { left: btn.style.left, top: btn.style.top });
+    function openPanel() {
+      if (!panel) createPanel();
+      if (!panel) return;
+      const isHidden = panel.style.display === 'none' || getComputedStyle(panel).display === 'none';
+      if (isHidden) {
+        panel.style.display = 'flex';
+        GM_setValue('cwh_open', true);
+        try { clampPanel(); } catch (err) {}
+        try { refreshClanFromProfile(true); } catch (e) {}
+      } else {
+        panel.style.display = 'none';
+        GM_setValue('cwh_open', false);
       }
     }
-    btn.addEventListener('mousedown', togStart);
-    document.addEventListener('mousemove', togMove);
-    document.addEventListener('mouseup', togEnd);
-    btn.addEventListener('touchstart', togStart, { passive: false });
-    document.addEventListener('touchmove', togMove, { passive: false });
-    document.addEventListener('touchend', togEnd);
-    document.addEventListener('touchcancel', togEnd);
-
-    btn.addEventListener('click', e => {
-      if (moved) { e.preventDefault(); e.stopPropagation(); return; }
-      if (!panel) createPanel();
-      const open = panel.style.display === 'none';
-      panel.style.display = open ? 'flex' : 'none';
-      GM_setValue('cwh_open', open);
-      if (open) try { clampPanel(); } catch (err) {}
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      openPanel();
     });
 
-    document.body.appendChild(btn);
+    function placeInTopbar() {
+      if (btn.parentElement && btn.parentElement.classList && btn.parentElement.classList.contains('game-topbar-nav')) {
+        return true;
+      }
+      const nav = document.querySelector('.game-topbar-nav');
+      if (!nav) return false;
+      // рядом с UwU
+      const uwu = document.getElementById('uwu-navbar-btn');
+      if (uwu && uwu.parentElement === nav) {
+        if (uwu.nextSibling) nav.insertBefore(btn, uwu.nextSibling);
+        else nav.appendChild(btn);
+      } else if (uwu && uwu.parentElement) {
+        uwu.parentElement.insertBefore(btn, uwu.nextSibling);
+      } else {
+        // перед «Памятка» uwu-quick-link или в конец nav
+        const pam = nav.querySelector('a.uwu-quick-link, a[href*="ls"]');
+        if (pam) nav.insertBefore(btn, pam);
+        else nav.appendChild(btn);
+      }
+      return true;
+    }
+
+    if (!placeInTopbar()) {
+      document.body.appendChild(btn);
+      let tries = 0;
+      const t = setInterval(function() {
+        tries++;
+        if (placeInTopbar() || tries > 40) clearInterval(t);
+      }, 500);
+    }
   }
 
   /* ========================================================================
@@ -3939,80 +4143,487 @@
   }
 
   function renderMemo(el) {
-    const growth = [
-      [0, '45%'], [1, '47%'], [2, '50%'], [3, '52%'], [4, '55%'],
-      [5, '60%'], [6, '65%'], [7, '66%'], [8, '68%'], [9, '70%'],
-      [10, '71%'], ['~35', '80%'], ['~65', '86%'], ['~95', '88%'],
-      ['~125', '90%'], ['~200', '95%'], ['~250', '100%']
-    ];
-    const limits = [
-      [0, 1], [6, 2], [12, 3], [50, 4], [200, 5]
-    ];
-    const degrees = [
-      ['≥ 90%', 'ушибы (часто сами)'],
-      ['80–75%', '1 степень'],
-      ['74–50%', '2 степень'],
-      ['49–25%', '3 степень'],
-      ['24–1%', '4 степень']
-    ];
+    function mi(name) {
+      const src = IMG[name] || (typeof ALGAE !== 'undefined' && name === 'Целебная водоросль' ? ALGAE[0].src : '');
+      return '<span class="cwh-memo-item" data-name="' + name + '" data-img="' + (src || '') + '">' + name + '</span>';
+    }
 
+    const fullMemo = (typeof isSantaMuerte === 'function') && isSantaMuerte();
+
+    // --- не Санта-Муэрте: только сортировка (кол-ва) + крапива ---
+    if (!fullMemo) {
+      el.innerHTML = `
+        <div class="cwh-section-title">Сортировка трав — количества</div>
+        <div class="cwh-collapse" id="cwh-counts-collapse">
+          <button type="button" class="cwh-collapse-btn" id="cwh-counts-tog">▾ Счётчик ресурсов</button>
+          <div class="cwh-collapse-body" id="cwh-counts-body">
+            <div class="cwh-counts-wrap">
+              <div id="cwh-duty-btns" class="cwh-duty-btns"></div>
+              <div id="cwh-duty-counts" class="cwh-counts-grid">—</div>
+              <div class="cwh-counts-actions">
+                <button type="button" class="cwh-link-btn" id="cwh-refresh-counts">🔄 Обновить</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="cwh-section-title">Крапива — куда класть</div>
+        <div class="cwh-card" id="cwh-nettle-card"><div class="cwh-card-body cwh-card-meta" style="line-height:1.55" id="cwh-nettle-box">
+          Считаем кучи…
+        </div></div>
+
+        <div class="cwh-section-title">Подсказки по ходу</div>
+        <div class="cwh-card"><div class="cwh-card-body cwh-card-meta" style="line-height:1.5">
+          <b class="cwh-memo-hl">Не гниют:</b>
+          ${mi('Паутина')}, ${mi('Наполненный мышиной желчью мох')},
+          ${mi('Крепкая ветка')}, ${mi('Костоправ')}<br>
+          <b class="cwh-memo-hl">ЦУ:</b> прокачка мхом с желчью или паутиной
+          (паутину — с разрешения главы). ×10 действий = 1 балл.
+        </div></div>
+        <div class="cwh-note" style="margin-top:8px;opacity:.7">Полная памятка — только для племени Санта-Муэрте (определяется по профилю).</div>
+      `;
+      try { refreshNettleBox(el); } catch (e) {}
+      // минимальный счётчик (как в полной версии)
+      (function bindSimpleCounts() {
+        function refreshCounts() {
+          const box = el.querySelector('#cwh-duty-counts');
+          const btns = el.querySelector('#cwh-duty-btns');
+          if (!box) return;
+          try { if (typeof trackMouthPickups === 'function') trackMouthPickups(); } catch (e) {}
+          const c = typeof dutyResourceCounts === 'function' ? dutyResourceCounts() : { now: {}, field: {}, mouthItems: 0 };
+          const active = typeof isDutyActive === 'function' && isDutyActive();
+          const start = typeof getDutyStartSnap === 'function' ? getDutyStartSnap() : {};
+          const picked = typeof getDutyPicked === 'function' ? getDutyPicked() : {};
+          const keysMain = ['mice','rot','moss','bile','web','cough','poison','wounds','branches','vine','algae','kost'];
+          if (btns) {
+            if (active) {
+              btns.innerHTML = '<div class="cwh-duty-banner on">● Учёт активен</div>'
+                + '<button type="button" class="cwh-link-btn cwh-duty-end" id="cwh-duty-end">⏹ Сбросить учёт</button>';
+              const endB = btns.querySelector('#cwh-duty-end');
+              if (endB) endB.onclick = function() { if (typeof endDuty === 'function') endDuty(); refreshCounts(); };
+            } else {
+              btns.innerHTML = '<button type="button" class="cwh-link-btn cwh-duty-start" id="cwh-duty-start">▶ Начать учёт количеств</button>';
+              const stB = btns.querySelector('#cwh-duty-start');
+              if (stB) stB.onclick = function() { if (typeof startDuty === 'function') startDuty(); refreshCounts(); };
+            }
+          }
+          let html = '<div class="cwh-count-sec">было → +сбор → сейчас</div>';
+          html += '<div class="cwh-count-head2"><span></span><span>было</span><span>+сбор</span><span>сейчас</span></div>';
+          keysMain.forEach(function(k) {
+            const g = RES_GROUPS[k];
+            if (!g) return;
+            const was = start[k] || 0;
+            const got = picked[k] || 0;
+            const now = was + got;
+            html += '<div class="cwh-count-row cwh-count-cols">'
+              + '<span class="cwh-count-label">' + g.name + '</span>'
+              + '<span class="cwh-c was"><input type="number" class="cwh-start-input" min="0" data-key="' + k + '" value="' + was + '"></span>'
+              + '<span class="cwh-c got">' + (got ? ('+' + got) : '0') + '</span>'
+              + '<span class="cwh-c now"><b>' + now + '</b></span></div>';
+          });
+          box.innerHTML = html;
+          box.querySelectorAll('.cwh-start-input').forEach(function(inp) {
+            inp.addEventListener('change', function() {
+              if (typeof setDutyStartValue === 'function') setDutyStartValue(inp.getAttribute('data-key'), inp.value);
+              refreshCounts();
+            });
+          });
+        }
+        const rc = el.querySelector('#cwh-refresh-counts');
+        if (rc) rc.onclick = function() { refreshCounts(); try { cwhBeep('ok'); } catch (e) {} };
+        window._cwhRefreshCounts = refreshCounts;
+        const countsTog = el.querySelector('#cwh-counts-tog');
+        const countsBody = el.querySelector('#cwh-counts-body');
+        if (countsTog && countsBody) {
+          const open = GM_getValue('cwh_counts_open', true);
+          countsBody.style.display = open ? '' : 'none';
+          countsTog.textContent = (open ? '▾' : '▸') + ' Счётчик ресурсов';
+          countsTog.onclick = function() {
+            const on = countsBody.style.display === 'none';
+            countsBody.style.display = on ? '' : 'none';
+            countsTog.textContent = (on ? '▾' : '▸') + ' Счётчик ресурсов';
+            GM_setValue('cwh_counts_open', on);
+          };
+        }
+        refreshCounts();
+      })();
+      return;
+    }
+
+    // --- Санта-Муэрте: полный вариант ---
     el.innerHTML = `
-      <div class="cwh-memo-rules">
-        <div class="cwh-section-title">Главные правила</div>
-        <div class="cwh-card cwh-memo-rules-card">
-          <ul class="cwh-memo-list">
-            <li>Ориентир — <b>рост модели</b> (связан с лунами).</li>
-            <li>Нужно залечить: <b>100 − текущее HP</b>.</li>
-            <li>Костоправ <b>не лечит</b> переломы, полученные во время ношения.</li>
-            <li>Среднее лечение переломов ≈ <b>½ луны</b> (2 дня). 5 ч → 5 дней.</li>
-            <li>Кровотечение с высоты 2+ = <b>1%</b> фактора перелома.</li>
-            <li>Не перенавешивай костоправы — есть <b>лимит хила</b>.</li>
-          </ul>
-        </div>
+<div class="cwh-section-title">Чеклист дежурства</div>
 
-        <div class="cwh-section-title">Луны → рост</div>
-        <div class="cwh-card cwh-memo-table-card">
-          <div class="cwh-memo-table">
-            ${growth.map(([m, p]) =>
-              '<div class="cwh-memo-row"><span class="cwh-memo-k">' + m + ' лун</span>'
-              + '<span class="cwh-memo-arrow">→</span>'
-              + '<span class="cwh-memo-v">' + p + '</span></div>'
-            ).join('')}
+      <details class="cwh-check-wrap" id="cwh-duty-check">
+        <summary class="cwh-check-sum">✅ Отметить выполненное <span class="cwh-check-progress" id="cwh-duty-prog"></span></summary>
+        <div class="cwh-check-list" id="cwh-duty-list">
+          <label class="cwh-check-item"><input type="checkbox" data-duty="1"> <span>1. Охота ≥35 мышей</span></label>
+          <label class="cwh-check-item"><input type="checkbox" data-duty="2"> <span>2. Сбор ресурсов (12 / 16 / 17:00 + бар)</span></label>
+          <label class="cwh-check-item"><input type="checkbox" data-duty="3"> <span>3. Сортировка куч</span></label>
+          <label class="cwh-check-item"><input type="checkbox" data-duty="4"> <span>4. Приборка (гниль, костоправы, желчь)</span></label>
+          <label class="cwh-check-item"><input type="checkbox" data-duty="5"> <span>5. Осмотр камней + отчёт</span></label>
+          <button type="button" class="cwh-link-btn" id="cwh-duty-reset" style="margin-top:6px">Сбросить</button>
+        </div>
+      </details>
+
+      <div class="cwh-section-title">Цепочка: с чего начать → что дальше</div>
+      <div class="cwh-flow">
+
+        <div class="cwh-flow-step">
+          <div class="cwh-flow-n">1</div>
+          <div class="cwh-flow-title">Охота на мышей</div>
+          <div class="cwh-flow-body">
+            Локация <span class="cwh-memo-hl">Щель в полу</span>. Закрой основную игровую — оставь только окно охоты (собака).<br>
+            Сначала посчитай ${mi('Мох')} (разбери бар <span class="cwh-memo-hl">1×6</span>) → лови
+            <span class="cwh-memo-hl">не меньше этого числа</span> мышей (обычно ≥35 со спавнов).
           </div>
+          <span class="cwh-flow-pts">+1 балл / мышь</span>
         </div>
 
-        <div class="cwh-section-title">Лимит костоправов</div>
-        <div class="cwh-card cwh-memo-table-card">
-          <div class="cwh-memo-table cwh-memo-table-limits">
-            ${limits.map(([m, n]) =>
-              '<div class="cwh-memo-row"><span class="cwh-memo-k">' + m + ' лун</span>'
-              + '<span class="cwh-memo-arrow">→</span>'
-              + '<span class="cwh-memo-v cwh-memo-lim">' + n + '</span></div>'
-            ).join('')}
+        <div class="cwh-flow-step">
+          <div class="cwh-flow-n">2</div>
+          <div class="cwh-flow-title">Сбор ресурсов по времени</div>
+          <div class="cwh-flow-body">
+            Переход: <span class="cwh-memo-hl">Щель в полу → Чащоба блуждающих огней</span>.
+            Бар <span class="cwh-memo-hl">1×6</span> — каждый заход.<br><br>
+            <span class="cwh-memo-hl">12:00 — ${mi('Крепкая ветка')}</span><br>
+            Цветущий тоннель · Заросшая мхом пещерка · Усеянная цветами пещерка ·
+            Скользкий туннель · Цветочный бар (1×6)<br><br>
+            <span class="cwh-memo-hl">16:00 — трава · ${mi('Паутина')} · крепкие ветки</span><br>
+            Паучья пещерка · Цветущий тоннель · Узкий лаз · Заросшая мхом пещерка ·
+            Заросшая пещера · Усеянная цветами пещерка · Скользкий туннель · бар (1×6)<br><br>
+            <span class="cwh-memo-hl">17:00 — ${mi('Мох')}</span><br>
+            Мрачная пещера · Пещера со сталактитами · Мховый лаз · Тёплый лаз ·
+            <span class="cwh-memo-hl">мох 1, 2, 3</span> · бар (1×6)<br><br>
+            Обычные ветки → клетка <span class="cwh-memo-hl">1×3</span> в подсобке.<br>
+            <span class="cwh-memo-hl">Не ходи</span> в переход Скользкий туннель → КБО (не выйдешь).
           </div>
+          <span class="cwh-flow-pts">+10 баллов</span>
         </div>
 
-        <div class="cwh-section-title">Степени переломов по HP</div>
-        <div class="cwh-card cwh-memo-table-card">
-          <div class="cwh-memo-table">
-            ${degrees.map(([hp, d]) =>
-              '<div class="cwh-memo-row"><span class="cwh-memo-k cwh-memo-hp">' + hp + '</span>'
-              + '<span class="cwh-memo-arrow">—</span>'
-              + '<span class="cwh-memo-v">' + d + '</span></div>'
-            ).join('')}
+        <div class="cwh-flow-step">
+          <div class="cwh-flow-n">3</div>
+          <div class="cwh-flow-title">Сортировка трав</div>
+          <div class="cwh-flow-body">
+            Кучи: кашель / отравление / раны.<br>
+            По сроку: <span class="cwh-memo-hl">сверху старые</span> (сгниют первыми),
+            <span class="cwh-memo-hl">снизу свежие</span>.<br>
+            ${mi('Паутина')} и ${mi('Наполненный мышиной желчью мох')} не портятся —
+            паутину клади <span class="cwh-memo-hl">сверху</span> кучи.
           </div>
+          <span class="cwh-flow-pts">+10 баллов</span>
         </div>
 
-        <div class="cwh-card cwh-memo-note-card">
-          <div class="cwh-memo-note">
-            Паутинный костоправ <b>+15%</b> к вьюнковому.<br>
-            Полные таблицы % по часам — в Google-памятке.
+        <div class="cwh-flow-step">
+          <div class="cwh-flow-n">4</div>
+          <div class="cwh-flow-title">Приборка (после 16:00)</div>
+          <div class="cwh-flow-body">
+            ① Смешай гниль (друг с другом или с обычными ветками).<br>
+            Гниют: травы кашля/отравления/ран, ${mi('Вьюнок')}, ${mi('Плотная водоросль')},
+            ${mi('Целебная водоросль')}, ${mi('Мох')}.<br>
+            ② Разложи по кучам. ${mi('Крапива')} — куда меньше (отравление или раны).<br>
+            ③ ${mi('Мох')} + мышь → ${mi('Наполненный мышиной желчью мох')} → клетка
+            <span class="cwh-memo-hl">1×6</span> (≥35 со спавнов).<br>
+            ④ ${mi('Костоправ')}: 2× ${mi('Крепкая ветка')} + ${mi('Вьюнок')}
+            (все крепкие, кроме 1).<br>
+            ⑤ Порт: игрушечные ветки + ${mi('Целебная водоросль')} (10×6) — убери гниль.
+          </div>
+          <span class="cwh-flow-pts">+15 баллов</span>
+        </div>
+
+        <div class="cwh-flow-step">
+          <div class="cwh-flow-n">5</div>
+          <div class="cwh-flow-title">Осмотр камней → отчёт</div>
+          <div class="cwh-flow-body">
+            Раз в день: поднять камни над травами → тщательный осмотр →
+            <span class="cwh-memo-hl">отчёт</span> → конец дежурства.
+          </div>
+          <span class="cwh-flow-pts">+5 баллов</span>
+        </div>
+
+      </div>
+
+      <div class="cwh-section-title">Крапива — куда класть</div>
+      <div class="cwh-card" id="cwh-nettle-card"><div class="cwh-card-body cwh-card-meta" style="line-height:1.55" id="cwh-nettle-box">
+        Считаем кучи…
+      </div></div>
+
+      <div class="cwh-section-title">Подсказки по ходу</div>
+      <div class="cwh-card"><div class="cwh-card-body cwh-card-meta" style="line-height:1.5">
+        <b class="cwh-memo-hl">Не гниют:</b>
+        ${mi('Паутина')}, ${mi('Наполненный мышиной желчью мох')},
+        ${mi('Крепкая ветка')}, ${mi('Костоправ')}<br>
+        <b class="cwh-memo-hl">ЦУ:</b> прокачка мхом с желчью или паутиной
+        (паутину — с разрешения главы). ×10 действий = 1 балл.
+      </div></div>
+
+      <div class="cwh-collapse" id="cwh-counts-collapse">
+        <button type="button" class="cwh-collapse-btn" id="cwh-counts-tog">▾ Счётчик ресурсов</button>
+        <div class="cwh-collapse-body" id="cwh-counts-body">
+          <div class="cwh-counts-wrap">
+            <div id="cwh-duty-btns" class="cwh-duty-btns"></div>
+            <div id="cwh-duty-counts" class="cwh-counts-grid">—</div>
+            <div class="cwh-counts-actions">
+              <button type="button" class="cwh-link-btn" id="cwh-refresh-counts">🔄 Обновить</button>
+            </div>
           </div>
         </div>
       </div>
-    `;
-  }
 
+      <div class="cwh-section-title">Маршрут сбора (после 17:00 МСК)</div>
+      <div class="cwh-card"><div class="cwh-card-body cwh-card-meta" style="line-height:1.65;font-size:12px">
+        1. <b class="cwh-memo-hl">Мох 1 → Мох 2 → Мох 3</b><br>
+        2. Локации <b>после чащобы</b> (все спавны трав)<br>
+        3. Бар / цветочная — мыши и остатки<br>
+        4. Вернуться в подсобку → сортировка → желчь (1 мышь + 1 мох)<br>
+        <span style="color:#8e969e">Сбор до 17:00 — по необходимости; после 17:00 — полный обход.</span>
+      </div></div>
+
+      <div class="cwh-collapse" id="cwh-stones-wrap">
+        <button type="button" class="cwh-collapse-btn" id="cwh-stones-tog">▸ Камни подсобки (чек-лист)</button>
+        <div class="cwh-collapse-body" id="cwh-stones-body" style="display:none">
+          <div class="cwh-card"><div class="cwh-card-body" id="cwh-stones-list" style="font-size:11px;line-height:1.7"></div></div>
+        </div>
+      </div>
+
+      <div class="cwh-section-title">Звук</div>
+      <div class="cwh-card"><div class="cwh-card-body">
+        <label class="cwh-check"><input type="checkbox" id="cwh-sound-tog"> Звуки (порча / действия)</label>
+      </div></div>
+
+      <div class="cwh-section-title">Разбалловка</div>
+      <div class="cwh-card"><div class="cwh-card-body cwh-card-meta" style="line-height:1.65">
+        сбор <span class="cwh-memo-hl">10</span> · приборка <span class="cwh-memo-hl">15</span> ·
+        сортировка <span class="cwh-memo-hl">10</span> · камни <span class="cwh-memo-hl">5</span><br>
+        охота <span class="cwh-memo-hl">1</span>/мышь · кот <span class="cwh-memo-hl">5</span> ·
+        ЦУ×10 <span class="cwh-memo-hl">1</span> · 7 ур.ЦУ <span class="cwh-memo-hl">15</span>
+      </div></div>
+
+      <div class="cwh-section-title">Легенда подсобки (цвета)</div>
+      <div class="cwh-leg-grid">${legendChipsHtml()}</div>
+      <button type="button" class="cwh-legend-toggle" id="cwh-legend-toggle">○ Легенда на поле ВЫКЛ</button>
+      <div class="cwh-note">Вкл — цветные клетки подсобки по схеме куч (ряд/колонка) + подпись. Не спрайты, а клетки.</div>
+
+      <div class="cwh-link-row">
+        <a class="cwh-link-btn" href="https://docs.google.com/spreadsheets/d/1s9Jwt6v5Ov0GHrLpD45cB_sMA0prGDsidwUV1atVFWE/edit?gid=1921159713#gid=1921159713" target="_blank" rel="noopener">📅 Расписание дежурств</a>
+      </div>
+      <div class="cwh-note">Наведи на зелёные названия — картинка ресурса.</div>
+    `;
+
+    bindDutyCheck(el);
+    try { refreshNettleBox(el); } catch (e) {}
+
+    // счётчик
+    function refreshCounts() {
+      const box = el.querySelector('#cwh-duty-counts');
+      const btns = el.querySelector('#cwh-duty-btns');
+      if (!box) return;
+      const c = dutyResourceCounts();
+      const active = isDutyActive();
+      trackMouthPickups();
+      const start = getDutyStartSnap();
+      const picked = getDutyPicked();
+      const keysMain = ['mice','rot','moss','bile','web','cough','poison','wounds','branches','vine','algae','kost'];
+      const miceNow = c.now.mice || 0;
+      const miceOk = miceNow >= 35;
+      const micePct = Math.min(100, Math.round(miceNow / 35 * 100));
+
+      if (btns) {
+        if (active) {
+          btns.innerHTML = ''
+            + '<div class="cwh-duty-banner on">● Дежурство идёт · заверши <b>до полуночи МСК</b></div>'
+            + '<button type="button" class="cwh-link-btn" id="cwh-duty-snap">📷 Снимок «было» с поля</button>'
+            + '<button type="button" class="cwh-link-btn cwh-duty-end" id="cwh-duty-end">⏹ Закончить дежурство</button>';
+          const snapB = btns.querySelector('#cwh-duty-snap');
+          if (snapB) snapB.onclick = function() {
+            if (typeof snapshotFieldToWas === 'function') snapshotFieldToWas();
+            refreshCounts();
+            cwhBeep('ok');
+          };
+          const endB = btns.querySelector('#cwh-duty-end');
+          if (endB) endB.onclick = function() { endDuty(); refreshCounts(); };
+        } else {
+          btns.innerHTML = ''
+            + '<div class="cwh-duty-banner">Дежурство не начато</div>'
+            + '<button type="button" class="cwh-link-btn cwh-duty-start" id="cwh-duty-start">▶ Начать дежурство</button>';
+          const stB = btns.querySelector('#cwh-duty-start');
+          if (stB) stB.onclick = function() { startDuty(); refreshCounts(); };
+        }
+      }
+
+      let html = '';
+      html += '<div class="cwh-count-mice">'
+        + '<div class="cwh-count-row"><span class="cwh-count-label">Мыши</span>'
+        + '<span class="cwh-count-val" style="color:' + (miceOk ? '#9fd66c' : '#ffb0b0') + '"><b>'
+        + miceNow + '</b> / 35</span></div>'
+        + '<div class="cwh-count-bar"><i style="width:' + micePct + '%;background:'
+        + (miceOk ? '#9fd66c' : '#e8a0a0') + '"></i></div></div>';
+
+      const inPod = (typeof isResourceCountLocation === 'function' && isResourceCountLocation()) || (typeof isPodsobkaLocation === 'function' && isPodsobkaLocation());
+
+      // ——— простой учёт: было (ручное) + сбор (рот / ручное) = сейчас ———
+      html += '<div class="cwh-count-sec">Учёт · поднимай в рот или вбивай числа</div>';
+      html += '<div class="cwh-count-head2"><span></span><span>было</span><span>+сбор</span><span>сейчас</span><span>поле</span></div>';
+      keysMain.forEach(k => {
+        const g = RES_GROUPS[k];
+        if (!g) return;
+        const was = start[k] || 0;
+        const got = picked[k] || 0;
+        const now = was + got;
+        const fieldN = (c.field && c.field[k]) || 0;
+        html += '<div class="cwh-count-row cwh-count-cols5">'
+          + '<span class="cwh-count-label">' + g.name + '</span>'
+          + '<span class="cwh-c was"><input type="number" class="cwh-start-input" min="0" data-key="' + k + '" value="' + was + '" title="Было до дежурства"></span>'
+          + '<span class="cwh-c got"><input type="number" class="cwh-pick-input" min="0" data-key="' + k + '" value="' + got + '" title="Поднято в рот / правка"></span>'
+          + '<span class="cwh-c now"><b>' + now + '</b></span>'
+          + '<span class="cwh-c" style="opacity:.55" title="Слои url на поле">' + fieldN + '</span>'
+          + '</div>';
+      });
+      html += '<div class="cwh-count-foot">'
+        + '<b>было</b> — впиши сам (или «Снимок с поля»)<br>'
+        + '<b>+сбор</b> — авто при подъёме в рот, можно править<br>'
+        + '<b>сейчас</b> = было + сбор<br>'
+        + '<b>поле</b> — слои things/N в клетках (ориентир, может быть меньше реального)<br>'
+        + 'Во рту сейчас: <b>' + c.mouthItems + '</b>'
+        + (active ? '<br><span style="color:#e8a060">⚠ Дежурство до полуночи МСК</span>' : '')
+        + '</div>';
+      if (!active) {
+        html += '<div class="cwh-note" style="margin-top:6px">Нажми «Начать дежурство», впиши «было», дальше поднимай ресурсы в рот — «+сбор» пойдёт сам.</div>';
+      }
+
+      box.innerHTML = html;
+
+      // ручной ввод «было» и «+сбор»
+      box.querySelectorAll('.cwh-start-input').forEach(function(inp) {
+        inp.addEventListener('change', function() {
+          setDutyStartValue(inp.getAttribute('data-key'), inp.value);
+          refreshCounts();
+        });
+        inp.addEventListener('click', function(e) { e.stopPropagation(); });
+      });
+      box.querySelectorAll('.cwh-pick-input').forEach(function(inp) {
+        inp.addEventListener('change', function() {
+          if (typeof setDutyPickedValue === 'function') {
+            setDutyPickedValue(inp.getAttribute('data-key'), inp.value);
+          }
+          refreshCounts();
+        });
+        inp.addEventListener('click', function(e) { e.stopPropagation(); });
+      });
+    }
+    const rc = el.querySelector('#cwh-refresh-counts');
+    if (rc) rc.onclick = function() { refreshCounts(); cwhBeep('ok'); };
+    window._cwhRefreshCounts = refreshCounts;
+    // collapse
+    const countsTog = el.querySelector('#cwh-counts-tog');
+    const countsBody = el.querySelector('#cwh-counts-body');
+    if (countsTog && countsBody) {
+      const open = GM_getValue('cwh_counts_open', true);
+      countsBody.style.display = open ? '' : 'none';
+      countsTog.textContent = (open ? '▾' : '▸') + ' Счётчик ресурсов';
+      countsTog.onclick = function() {
+        const on = countsBody.style.display === 'none';
+        countsBody.style.display = on ? '' : 'none';
+        countsTog.textContent = (on ? '▾' : '▸') + ' Счётчик ресурсов';
+        GM_setValue('cwh_counts_open', on);
+      };
+    }
+    refreshCounts();
+    if (!window._cwhCountsObs) {
+      const kick = function() {
+        if (window._cwhCountsT) clearTimeout(window._cwhCountsT);
+        window._cwhCountsT = setTimeout(function() {
+          if (!document.getElementById('cwh-duty-counts')) return;
+          try {
+            try { trackMouthPickups(); } catch (e2) {}
+            if (typeof window._cwhRefreshCounts === 'function') window._cwhRefreshCounts();
+          } catch (e) {}
+        }, 600);
+      };
+      const obs = new MutationObserver(kick);
+      const boot = function() {
+        const cages = document.getElementById('cages') || document.querySelector('#cages_div');
+        const mouth = document.getElementById('itemList');
+        if (cages) obs.observe(cages, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+        if (mouth) obs.observe(mouth, { childList: true, subtree: true });
+        if (!cages && !mouth) { setTimeout(boot, 1000); return; }
+        window._cwhCountsObs = obs;
+        kick();
+      };
+      boot();
+      window._cwhCountsTick = setInterval(function() {
+        if (document.getElementById('cwh-duty-counts')) {
+          try {
+            try { trackMouthPickups(); } catch (e2) {}
+            if (typeof window._cwhRefreshCounts === 'function') window._cwhRefreshCounts();
+          } catch (e) {}
+        }
+      }, 5000);
+    }
+
+
+    // камни
+    const STONE_LIST = [
+      { id: '43415891', name: 'ветки игр.' },
+      { id: '68735202', name: 'мох' },
+      { id: '43484506', name: 'мышь' },
+      { id: '60721354', name: 'мох*****' },
+      { id: '66188223', name: 'кашель' },
+      { id: '61998519', name: 'отравление' },
+      { id: '60770785', name: 'раны' },
+      { id: '65436930', name: 'вьюнки' },
+      { id: '61968903', name: 'ветки (игрушечные / смешивание)' },
+      { id: '62033307', name: 'кости' },
+      { id: '64534742', name: 'паутина' },
+    ];
+    const stonesBox = el.querySelector('#cwh-stones-list');
+    if (stonesBox) {
+      const done = GM_getValue('cwh_stones_done', {}) || {};
+      stonesBox.innerHTML = STONE_LIST.map(s => {
+        const on = !!done[s.id];
+        return '<label class="cwh-check"><input type="checkbox" data-stone="' + s.id + '"' + (on ? ' checked' : '') + '> '
+          + s.id + ' — ' + s.name + '</label>';
+      }).join('');
+      stonesBox.querySelectorAll('input[data-stone]').forEach(inp => {
+        inp.onchange = function() {
+          const d = GM_getValue('cwh_stones_done', {}) || {};
+          d[inp.getAttribute('data-stone')] = inp.checked;
+          GM_setValue('cwh_stones_done', d);
+          if (inp.checked) cwhBeep('ok');
+        };
+      });
+    }
+
+
+    // сворачивание камней
+    const stog = el.querySelector('#cwh-stones-tog');
+    const sbody = el.querySelector('#cwh-stones-body');
+    if (stog && sbody) {
+      const open = !!GM_getValue('cwh_stones_open', false);
+      sbody.style.display = open ? 'block' : 'none';
+      stog.textContent = (open ? '▾' : '▸') + ' Камни подсобки (чек-лист)';
+      stog.onclick = function() {
+        const now = sbody.style.display !== 'block';
+        sbody.style.display = now ? 'block' : 'none';
+        GM_setValue('cwh_stones_open', now);
+        stog.textContent = (now ? '▾' : '▸') + ' Камни подсобки (чек-лист)';
+        if (now) cwhBeep('ok');
+      };
+    }
+
+    // звук toggle
+    const snd = el.querySelector('#cwh-sound-tog');
+    if (snd) {
+      snd.checked = !!GM_getValue('cwh_sound', true);
+      snd.onchange = function() { GM_setValue('cwh_sound', snd.checked); if (snd.checked) cwhBeep('ok'); };
+    }
+
+    const legBtn = el.querySelector('#cwh-legend-toggle');
+    if (legBtn) {
+      legBtn.onclick = () => setFieldLegend(!legendWanted());
+      applyFieldLegend();
+    }
+  }
 
 
   function refreshNettleBox(root) {
@@ -4552,87 +5163,129 @@
 
   function clearNoGoNode(node) {
     if (!node) return;
-    node.classList.remove('cwh-no-go');
-    node.querySelectorAll('.cwh-no-go-label, .cwh-no-go-name').forEach(function(n) { n.remove(); });
-    node.querySelectorAll('.move_name').forEach(function(mn) {
-      try { mn.style.opacity = ''; } catch (e) {}
+    try { node.classList.remove('cwh-no-go'); } catch (e) {}
+    try {
+      node.querySelectorAll('.cwh-no-go-label, .cwh-no-go-name, .cwh-no-go-blocker').forEach(function(n) { n.remove(); });
+    } catch (e) {}
+    try {
+      node.querySelectorAll('.move_name').forEach(function(mn) {
+        mn.style.opacity = '';
+        mn.style.visibility = '';
+      });
+    } catch (e) {}
+  }
+
+  function clearAllNoGo() {
+    document.querySelectorAll('.cwh-no-go').forEach(clearNoGoNode);
+    document.querySelectorAll('.cwh-no-go-label, .cwh-no-go-name').forEach(function(n) {
+      try { n.remove(); } catch (e) {}
     });
+    window._cwhNoGoActive = false;
+  }
+
+  function isRealTunnelMoveName(el) {
+    if (!el || !el.classList || !el.classList.contains('move_name')) return false;
+    if (el.closest && el.closest('#cwh-widget')) return false;
+    if (el.classList.contains('cwh-no-go-label') || el.classList.contains('cwh-no-go-name')) return false;
+    // только настоящий переход
+    const parent = el.closest && el.closest('.move_parent');
+    if (!parent) return false;
+    // чистый текст подписи (без наших меток)
+    let t = '';
+    el.childNodes.forEach(function(n) {
+      if (n.nodeType === 3) t += n.nodeValue;
+      else if (n.nodeType === 1 && n.classList &&
+        (n.classList.contains('cwh-no-go-label') || n.classList.contains('cwh-no-go-name'))) {
+        /* skip */
+      } else if (n.nodeType === 1) {
+        t += (n.textContent || '');
+      }
+    });
+    t = t.replace(/\s+/g, ' ').trim();
+    if (!t) t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    // строго: начинается со «Скользк» и есть «туннел»
+    if (!/^скользк/i.test(t)) return false;
+    if (!/туннел/i.test(t)) return false;
+    // отсечь слишком длинный мусор
+    if (t.length > 40) return false;
+    return { el: el, parent: parent, text: t };
   }
 
   function markNoGoLocations() {
-    // Подсобка: соседний «Скользкий туннель» — не опасный КБО-переход, не красим
     const inPodsobka = (typeof isPodsobkaLocation === 'function') && isPodsobkaLocation();
-    const activeParents = new Set();
+    const valid = new Set();
 
-    if (!inPodsobka) {
-      // только игровые подписи переходов — не наши метки
-      document.querySelectorAll('.move_name, span.move_name').forEach(function(el) {
-        // пропуск наших инъекций
-        if (el.closest && el.closest('#cwh-widget')) return;
-        if (el.classList && (el.classList.contains('cwh-no-go-label') || el.classList.contains('cwh-no-go-name'))) return;
-        const t = (el.textContent || el.innerText || '').replace(/\s+/g, ' ').trim();
-        if (!t) return;
-        let hit = null;
-        for (let i = 0; i < NO_GO_LOCATIONS.length; i++) {
-          if (NO_GO_LOCATIONS[i].re.test(t)) { hit = NO_GO_LOCATIONS[i]; break; }
-        }
-        if (!hit) return;
-
-        const parent = el.closest('.move_parent') || el.parentElement;
-        if (!parent) return;
-        parent.classList.add('cwh-no-go');
-        activeParents.add(parent);
-
-        const td = el.closest('#cages td.cage, #cages td, td.cage');
-        if (td) {
-          td.classList.add('cwh-no-go');
-          activeParents.add(td);
-        }
-
-        const host = parent.classList.contains('move_parent') ? parent : (td || parent);
-        if (host && getComputedStyle(host).position === 'static') {
-          try { host.style.position = 'relative'; } catch (e) {}
-        }
-        let lab = host.querySelector(':scope > .cwh-no-go-label');
-        if (!lab) {
-          lab = document.createElement('div');
-          lab.className = 'cwh-no-go-label';
-          lab.setAttribute('data-cwh', '1');
-          host.appendChild(lab);
-        }
-        if (lab.textContent !== hit.warn) lab.textContent = hit.warn;
-        el.style.opacity = '0';
-
-        if (td && td !== host) {
-          if (getComputedStyle(td).position === 'static') {
-            try { td.style.position = 'relative'; } catch (e2) {}
-          }
-          let nameLab = td.querySelector(':scope > .cwh-no-go-name');
-          if (!nameLab) {
-            nameLab = document.createElement('div');
-            nameLab.className = 'cwh-no-go-name';
-            nameLab.setAttribute('data-cwh', '1');
-            td.appendChild(nameLab);
-          }
-          if (nameLab.textContent !== t) nameLab.textContent = t;
-        }
-      });
+    function applyMark(host) {
+      if (!host) return;
+      valid.add(host);
+      host.classList.add('cwh-no-go');
+      try {
+        if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      } catch (e) {}
+      let lab = host.querySelector(':scope > .cwh-no-go-label');
+      if (!lab) {
+        lab = document.createElement('div');
+        lab.className = 'cwh-no-go-label';
+        lab.setAttribute('data-cwh', '1');
+        host.appendChild(lab);
+      }
+      if (lab.textContent !== 'НЕ ХОДИТЬ') lab.textContent = 'НЕ ХОДИТЬ';
+      // непрозрачный блокер ловит клики (pointer-events:none пропускал клик в клетку)
+      let blk = host.querySelector(':scope > .cwh-no-go-blocker');
+      if (!blk) {
+        blk = document.createElement('div');
+        blk.className = 'cwh-no-go-blocker';
+        blk.setAttribute('data-cwh', '1');
+        host.appendChild(blk);
+      }
     }
 
-    // Снять ВСЁ, что не в activeParents.
-    // Важно: НЕ смотреть node.textContent — там наши же «Скользкий/НЕ ХОДИТЬ»
-    // и из‑за этого метка залипала до F5.
+    if (!inPodsobka) {
+      // 1) .move_parent с .move_name
+      document.querySelectorAll('.move_parent').forEach(function(parent) {
+        if (parent.closest && parent.closest('#cwh-widget')) return;
+        const mn = parent.querySelector('.move_name');
+        if (!mn) return;
+        const info = isRealTunnelMoveName(mn);
+        if (!info) return;
+        applyMark(parent);
+        const td = parent.closest('td.cage, td');
+        if (td) applyMark(td);
+      });
+      // 2) fallback: любой .move_name / текст в клетке
+      if (!valid.size) {
+        document.querySelectorAll('.move_name, #cages td.cage').forEach(function(el) {
+          if (el.closest && el.closest('#cwh-widget')) return;
+          const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!/^скользк/i.test(t) || !/туннел/i.test(t)) return;
+          if (t.length > 60) return;
+          if (el.classList.contains('move_name')) {
+            const parent = el.closest('.move_parent') || el.parentElement;
+            applyMark(parent);
+            const td = el.closest('td.cage, td');
+            if (td) applyMark(td);
+          } else {
+            applyMark(el);
+          }
+        });
+      }
+    }
+
     document.querySelectorAll('.cwh-no-go').forEach(function(node) {
-      if (!inPodsobka && activeParents.has(node)) return;
+      if (valid.has(node)) return;
       clearNoGoNode(node);
+      try {
+        if (node.style && node.style.position === 'relative') node.style.position = '';
+      } catch (e) {}
     });
-    // сироты-метки без родителя с классом
-    document.querySelectorAll('.cwh-no-go-label, .cwh-no-go-name').forEach(function(n) {
-      const p = n.parentElement;
-      if (!p || !p.classList.contains('cwh-no-go')) n.remove();
+    document.querySelectorAll('.cwh-no-go-label, .cwh-no-go-name, .cwh-no-go-blocker').forEach(function(n) {
+      const par = n.parentElement;
+      if (!par || !par.classList.contains('cwh-no-go')) {
+        try { n.remove(); } catch (e) {}
+      }
     });
 
-    window._cwhNoGoActive = document.querySelectorAll('.cwh-no-go').length > 0;
+    window._cwhNoGoActive = valid.size > 0;
   }
 
   function showNoGoToast(text) {
@@ -4655,20 +5308,25 @@
   function initNoGoClickBlock() {
     if (window._cwhNoGoClickBound) return;
     window._cwhNoGoClickBound = true;
-    document.addEventListener('click', function(e) {
-      const el = e.target && e.target.closest && e.target.closest('.cwh-no-go, .move_parent.cwh-no-go, td.cage.cwh-no-go');
+    function blockEvt(e) {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      const el = t.closest('.cwh-no-go, .cwh-no-go-blocker, .move_parent.cwh-no-go, td.cage.cwh-no-go');
       if (!el) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.stopImmediatePropagation) e.stopImmediatePropagation();
       cwhBeep('warn');
       showNoGoToast('⛔ Переход запрещён: Скользкий туннель');
-    }, true); // capture-фаза — раньше обработчика самой игры
+      return false;
+    }
+    // capture на всех фазах клика — игра слушает mousedown/mouseup/click
+    ['click', 'mousedown', 'mouseup', 'dblclick', 'contextmenu', 'pointerdown', 'pointerup'].forEach(function(type) {
+      document.addEventListener(type, blockEvt, true);
+    });
   }
 
-  /** блокируем перемещение по клеточкам клавишами WASD / стрелками,
-   *  если рядом (на экране) есть запрещённый переход — направление неизвестно,
-   *  поэтому на время блокируются все клавиши движения */
+  /** Блокируем WASD/стрелки, пока на карте есть запретный переход */
   function initNoGoKeyBlock() {
     if (window._cwhNoGoKeyBound) return;
     window._cwhNoGoKeyBound = true;
@@ -4676,15 +5334,15 @@
     document.addEventListener('keydown', function(e) {
       if (!window._cwhNoGoActive) return;
       const tag = (e.target && e.target.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return; // не мешаем набору текста
+      if (tag === 'input' || tag === 'textarea' || (e.target && e.target.isContentEditable)) return;
       const k = (e.key || '').toLowerCase();
       if (!MOVE_KEYS.has(k)) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.stopImmediatePropagation) e.stopImmediatePropagation();
       cwhBeep('warn');
-      showNoGoToast('⛔ Движение WASD заблокировано рядом со Скользким туннелем');
-    }, true); // capture-фаза
+      showNoGoToast('⛔ WASD заблокирован: Скользкий туннель на карте');
+    }, true);
   }
 
   initNoGoClickBlock();
@@ -4693,8 +5351,9 @@
   function applyFieldLegend() {
       const want = legendWanted();
       const here = isPodsobkaLocation();
-      // СТРОГО только локация «Подсобка»
-      const on = !!(want && here);
+      // легенда / подсветка куч — только Санта-Муэрте + Подсобка
+      const sm = (typeof isSantaMuerte === 'function') && isSantaMuerte();
+      const on = !!(want && here && sm);
       let styleEl = document.getElementById('cwh-resourcesStyle');
       if (on) {
         // ВАЖНО: пересоздаём всегда, если элемента нет,
@@ -4937,11 +5596,69 @@
         if (!el.id) return;
         alive.add(el.id);
 
-        // подсказки «что / от чего» во рту отключены по запросу
+        // --- кучка (куда класть) ---
+        let pileLab = el.querySelector(':scope > .cwh-pile-label');
+        let pileTxt = '';
+        try {
+          const hi = typeof herbInfoFromEl === 'function' ? herbInfoFromEl(el) : null;
+          if (hi && hi.herb && typeof sortCategoryForHerb === 'function') {
+            const sc = sortCategoryForHerb(hi.herb);
+            if (sc && sc.label) pileTxt = sc.label;
+          } else if (hi && !hi.herb) {
+            // ресурс по type
+            const tid = String(hi.name || '');
+            if (/вьюн/i.test(tid) || /вьюн/i.test(hi.treats || '')) pileTxt = '→ Вьюнки';
+            else if (/ветк/i.test(tid)) pileTxt = '→ Ветки';
+            else if (/мох/i.test(tid) && /желч/i.test(hi.treats || '')) pileTxt = '→ Мох с желчью';
+            else if (/мох/i.test(tid)) pileTxt = '→ Мох';
+            else if (/паутин/i.test(tid)) pileTxt = '→ Паутина';
+            else if (/кашель|пижм|мят|бурач|мать|рябин|одуван/i.test(tid)) pileTxt = '→ Кашель';
+            else if (/отрав|водоросл|крапив/i.test(tid)) pileTxt = '→ Отравление';
+            else if (/ран|кровоток|подорож|тысяч|клевер|щавел|незабуд|лопух|шип/i.test(tid)) pileTxt = '→ Раны';
+          }
+          // fallback по thing id
+          if (!pileTxt) {
+            const tid = typeof thingIdFromEl === 'function' ? String(thingIdFromEl(el) || '') : '';
+            if (tid === '566') pileTxt = '→ Вьюнки';
+            else if (tid === '565') pileTxt = '→ Ветки';
+            else if (tid === '20') pileTxt = '→ Паутина';
+            else if (tid === '78') pileTxt = '→ Мох с желчью';
+            else if (['75','76','77'].indexOf(tid) !== -1) pileTxt = '→ Мох';
+            else if (typeof RES_GROUPS !== 'undefined') {
+              for (const k of Object.keys(RES_GROUPS)) {
+                if ((RES_GROUPS[k].ids || []).map(String).indexOf(tid) !== -1) {
+                  const nm = RES_GROUPS[k].name || k;
+                  if (/кашель/i.test(nm)) pileTxt = '→ Кашель';
+                  else if (/отрав/i.test(nm)) pileTxt = '→ Отравление';
+                  else if (/ран/i.test(nm)) pileTxt = '→ Раны';
+                  else if (/ветк/i.test(nm)) pileTxt = '→ Ветки';
+                  else if (/вьюн/i.test(nm)) pileTxt = '→ Вьюнки';
+                  else if (/паутин/i.test(nm)) pileTxt = '→ Паутина';
+                  else if (/мох с желч/i.test(nm)) pileTxt = '→ Мох с желчью';
+                  else if (/^мох/i.test(nm)) pileTxt = '→ Мох';
+                  else pileTxt = '→ ' + nm;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (e) {}
+        if (pileTxt) {
+          if (!pileLab) {
+            pileLab = document.createElement('div');
+            pileLab.className = 'cwh-pile-label';
+            pileLab.setAttribute('data-cwh', '1');
+            el.appendChild(pileLab);
+          }
+          if (pileLab.textContent !== pileTxt) pileLab.textContent = pileTxt;
+        } else if (pileLab) {
+          pileLab.remove();
+        }
+        // убрать старые info-label
         const oldInfo = el.querySelector(':scope > .cwh-info-label');
         if (oldInfo) oldInfo.remove();
 
-        // --- срок порчи (оставляем) ---
+        // --- срок порчи ---
         let lab = el.querySelector(':scope > .cwh-spoil-label');
         let info = spoilCache[el.id];
         if (!info && isPerishableEl(el)) {
@@ -4949,28 +5666,29 @@
         }
         if (!info) {
           if (lab) lab.remove();
-          return;
-        }
-        if (!info.soft) info = liveSpoilInfo(info);
-        if (!lab) {
-          lab = document.createElement('div');
-          lab.className = 'cwh-spoil-label';
-          lab.setAttribute('data-cwh', '1');
-          el.appendChild(lab);
-        }
-        const txt = info.soft ? (info.text || 'гниёт') : info.text;
-        if (lab.textContent !== txt) lab.textContent = txt;
-        const leftH = info.totalMinLeft != null ? info.totalMinLeft / 60 : info.hours;
-        const isWarn = !info.soft && leftH <= 3;
-        lab.classList.toggle('warn', isWarn);
-        lab.classList.toggle('soft', !!info.soft);
-        lab.title = info.soft ? 'Скоропорт' : ('До порчи ≈ ' + info.text);
-        if (isWarn && el.id) {
-          const key = 'warn_' + el.id;
-          const last = window._cwhSpoilWarned || (window._cwhSpoilWarned = {});
-          if (!last[key] || Date.now() - last[key] > 120000) {
-            last[key] = Date.now();
-            cwhBeep('warn');
+          // не return — кучка уже выставлена
+        } else {
+          if (!info.soft) info = liveSpoilInfo(info);
+          if (!lab) {
+            lab = document.createElement('div');
+            lab.className = 'cwh-spoil-label';
+            lab.setAttribute('data-cwh', '1');
+            el.appendChild(lab);
+          }
+          const txt = info.soft ? (info.text || 'гниёт') : info.text;
+          if (lab.textContent !== txt) lab.textContent = txt;
+          const leftH = info.totalMinLeft != null ? info.totalMinLeft / 60 : info.hours;
+          const isWarn = !info.soft && leftH <= 3;
+          lab.classList.toggle('warn', isWarn);
+          lab.classList.toggle('soft', !!info.soft);
+          lab.title = info.soft ? 'Скоропорт' : ('До порчи ≈ ' + info.text);
+          if (isWarn && el.id) {
+            const key = 'warn_' + el.id;
+            const last = window._cwhSpoilWarned || (window._cwhSpoilWarned = {});
+            if (!last[key] || Date.now() - last[key] > 120000) {
+              last[key] = Date.now();
+              cwhBeep('warn');
+            }
           }
         }
       });
@@ -5134,9 +5852,9 @@
       };
       const obs = new MutationObserver(muts => {
         for (const m of muts) {
-          if (m.target && m.target.classList && (m.target.classList.contains('cwh-spoil-label') || m.target.classList.contains('cwh-info-label'))) return;
+          if (m.target && m.target.classList && (m.target.classList.contains('cwh-spoil-label') || m.target.classList.contains('cwh-info-label') || m.target.classList.contains('cwh-pile-label'))) return;
           for (const n of m.addedNodes || []) {
-            if (n.classList && (n.classList.contains('cwh-spoil-label') || n.classList.contains('cwh-info-label'))) return;
+            if (n.classList && (n.classList.contains('cwh-spoil-label') || n.classList.contains('cwh-info-label') || n.classList.contains('cwh-pile-label'))) return;
           }
         }
         schedule();
@@ -5152,8 +5870,25 @@
   }
 
   function init() {
-    // не показываем виджет вне игровой с полем
+    // племя: с профиля (fetch) или с текущей страницы
+    try {
+      refreshClanFromProfile(true).then(function() {
+        try {
+          if (panel && panel.style.display !== 'none' && body) {
+            const tab = GM_getValue('cwh_tab', 'herbs');
+            if (tab === 'memo' && typeof renderMemo === 'function') {
+              const memoEl = body.querySelector('#cwh-memo-root') || body;
+              // если активна вкладка памятка — обновить
+            }
+          }
+        } catch (e2) {}
+      });
+    } catch (e) {}
+    // виджет только на игровой с полем; на профиле — только детекция племени
     if (/\/cw3\/jagd/i.test(location.href)) return;
+    const isGame = /\/cw3\/?$/i.test(location.pathname || '') || /\/cw3\/($|\?|#)/i.test(location.href || '')
+      || !!document.getElementById('cages') || !!document.getElementById('cages_div');
+    if (!isGame) return;
     if (!document.getElementById('cages') && !document.getElementById('cages_div')) {
       // подождать карту один раз; на jagd cages нет — не создаём UI
       setTimeout(function() {
